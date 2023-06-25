@@ -7,19 +7,15 @@ contract EmployeeStockOptionPlan {
     struct VestingSchedule {
         uint256 cliffDuration; // Cliff duration in seconds
         uint256 vestingDuration; // Total vesting duration in seconds
-        uint256 totalOptions; // Total number of options granted
-        uint256 exercisedOptions; // Number of options exercised so far
         uint256 startTime; // Start time of the vesting schedule
     }
 
     // Structure to hold information about an employee
     struct Employee {
         bool isActive; // Flag to indicate whether the employee is active
-        uint256 totalGrantedOptions; // Total number of options granted to the employee
-        uint256 totalUnAllocatedOptions; // Total number of unallocated options to the employee
-        uint256 totalExercisedOptions; // Total number of options exercised by the employee
-        uint256 vestingScheduleCount; // Total number of vesting schedules
-        mapping(uint256 => VestingSchedule) vestingSchedules; // Mapping of vesting schedules by index
+        uint256 totalOptions; // Total number of options granted to the employee
+        uint256 exercisedOptions; // Number of options exercised so far
+        VestingSchedule vestingSchedule; // Options vesting schedule for the employee
     }
 
     address public owner; // Contract owner address
@@ -33,22 +29,15 @@ contract EmployeeStockOptionPlan {
 
     event VestingScheduleSet(
         address indexed employee,
-        uint256 index,
         uint256 cliffDuration,
-        uint256 vestingDuration,
-        uint256 totalOptions
+        uint256 vestingDuration
     );
 
-    event OptionsExercised(
-        address indexed employee,
-        uint256 index,
-        uint256 amount
-    );
+    event OptionsExercised(address indexed employee, uint256 amount);
 
     event OptionsTransferred(
         address indexed from,
         address indexed to,
-        uint256 index,
         uint256 amount
     );
 
@@ -72,8 +61,7 @@ contract EmployeeStockOptionPlan {
         );
 
         employees[employee].isActive = true;
-        employees[employee].totalGrantedOptions = options;
-        employees[employee].totalUnAllocatedOptions = options;
+        employees[employee].totalOptions = options;
 
         emit StockOptionsGranted(employee, options);
     }
@@ -83,71 +71,78 @@ contract EmployeeStockOptionPlan {
     // *todo 5. Implement the functions for setting the vesting schedule
     function setVestingSchedule(
         address employee,
-        uint256 index,
         uint256 cliffDuration,
-        uint256 vestingDuration,
-        uint256 totalOptions
+        uint256 vestingDuration
     ) external onlyOwner onlyActiveEmployee(employee) {
         require(
-            index == _getVestingScheduleCount(employee),
-            "Vesting schedule index must be incremental."
-        );
-        require(
-            totalOptions <= employees[employee].totalUnAllocatedOptions,
-            "Cannot grant more options than the total granted options."
+            employees[employee].vestingSchedule.startTime == 0,
+            "Vesting schedule has already been set"
         );
 
-        employees[employee].vestingSchedules[index] = VestingSchedule(
+        employees[employee].vestingSchedule = VestingSchedule(
             cliffDuration,
             vestingDuration,
-            totalOptions,
-            0,
             block.timestamp
         );
 
-        employees[employee].vestingScheduleCount += 1;
-        employees[employee].totalUnAllocatedOptions -= totalOptions;
-
-        emit VestingScheduleSet(
-            employee,
-            index,
-            cliffDuration,
-            vestingDuration,
-            totalOptions
-        );
+        emit VestingScheduleSet(employee, cliffDuration, vestingDuration);
     }
 
     // *todo end
 
     // *todo 6. Implement the functions for exercising options
     function exerciseOptions(
-        uint256 scheduleIndex,
         uint256 amount
-    ) external onlyActiveEmployee(msg.sender) {
-        require(
-            scheduleIndex < _getVestingScheduleCount(msg.sender),
-            "Invalid vesting schedule index."
-        );
+    )
+        external
+        onlyActiveEmployee(msg.sender)
+        hasAvailableOptions(msg.sender, amount)
+    {
+        uint256 exercisedOptions = employees[msg.sender].exercisedOptions;
+        employees[msg.sender].exercisedOptions = exercisedOptions + amount;
 
-        require(
-            amount <= _getScheduleVestedOptions(msg.sender, scheduleIndex),
-            "Insufficient vested options."
-        );
-
-        uint256 exercisedOptions = employees[msg.sender]
-            .vestingSchedules[scheduleIndex]
-            .exercisedOptions;
-
-        employees[msg.sender].vestingSchedules[scheduleIndex].exercisedOptions =
-            exercisedOptions +
-            amount;
-
-        emit OptionsExercised(msg.sender, scheduleIndex, amount);
+        emit OptionsExercised(msg.sender, amount);
     }
 
     // *todo end
 
     // *todo 7. Implement the functions for tracking vested and exercised options
+    function getVestedOptions(
+        address employee
+    ) public view onlyActiveEmployee(employee) returns (uint256) {
+        VestingSchedule memory schedule = employees[employee].vestingSchedule;
+
+        if (schedule.startTime == 0) {
+            return 0;
+        }
+
+        uint256 currentTime = block.timestamp;
+        uint256 cliffEndTime = schedule.startTime + schedule.cliffDuration;
+        uint256 vestingEndTime = schedule.startTime + schedule.vestingDuration;
+
+        if (currentTime < cliffEndTime) {
+            return 0;
+        } else {
+            // completely vested
+            if (currentTime >= vestingEndTime) {
+                return employees[employee].totalOptions;
+            }
+
+            uint256 vestedDuration = currentTime - cliffEndTime;
+            uint256 totalVestingDuration = schedule.vestingDuration -
+                schedule.cliffDuration;
+
+            return ((vestedDuration * employees[employee].totalOptions) /
+                totalVestingDuration);
+        }
+    }
+
+    function getExercisedOptions(
+        address employee
+    ) public view onlyActiveEmployee(employee) returns (uint256) {
+        return employees[employee].exercisedOptions;
+    }
+
     // *todo end
 
     // *todo 8. Implement the necessary modifiers and access control
@@ -164,95 +159,50 @@ contract EmployeeStockOptionPlan {
         _;
     }
 
+    modifier hasAvailableOptions(address employee, uint256 amount) {
+        require(
+            amount <=
+                (getVestedOptions(employee) -
+                    employees[employee].exercisedOptions),
+            "Insufficient vested options available for exercise."
+        );
+        _;
+    }
+
+    modifier vestingScheduleCompleted(address employee) {
+        require(employees[employee].isActive, "The employee is not active.");
+
+        VestingSchedule memory schedule = employees[employee].vestingSchedule;
+        uint256 currentTime = block.timestamp;
+        uint256 endTime = schedule.startTime + schedule.vestingDuration;
+
+        require(currentTime >= endTime, "Vesting schedule is not completed.");
+        _;
+    }
+
     // *todo end
 
     // *todo 9. Add any additional functions or modifiers as needed
     function transferOptions(
         address to,
-        uint256 scheduleIndex,
         uint256 amount
-    ) external onlyActiveEmployee(msg.sender) onlyActiveEmployee(to) {
+    )
+        external
+        onlyActiveEmployee(msg.sender)
+        onlyActiveEmployee(to)
+        vestingScheduleCompleted(msg.sender)
+        hasAvailableOptions(msg.sender, amount)
+    {
         address from = msg.sender;
 
-        require(
-            scheduleIndex < _getVestingScheduleCount(from),
-            "Invalid vesting schedule index."
-        );
+        uint256 exercisedOptions = employees[from].exercisedOptions;
 
-        require(
-            _isVestingScheduleCompleted(from, scheduleIndex),
-            "Vesting schedule is not completed."
-        );
+        employees[from].exercisedOptions = exercisedOptions + amount;
 
-        require(
-            amount <= _getScheduleVestedOptions(from, scheduleIndex),
-            "Insufficient vested options."
-        );
+        employees[to].totalOptions += amount;
 
-        uint256 exercisedOptions = employees[from]
-            .vestingSchedules[scheduleIndex]
-            .exercisedOptions;
-
-        employees[from].vestingSchedules[scheduleIndex].exercisedOptions =
-            exercisedOptions +
-            amount;
-
-        employees[to].totalGrantedOptions += amount;
-
-        emit OptionsTransferred(from, to, scheduleIndex, amount);
+        emit OptionsTransferred(from, to, amount);
     }
 
-    function _isVestingScheduleCompleted(
-        address employee,
-        uint256 scheduleIndex
-    ) internal view onlyActiveEmployee(employee) returns (bool) {
-        VestingSchedule memory schedule = employees[employee].vestingSchedules[
-            scheduleIndex
-        ];
-        uint256 currentTime = block.timestamp;
-        uint256 endTime = schedule.startTime + schedule.vestingDuration;
-
-        return currentTime >= endTime;
-    }
-
-    function _getVestingScheduleCount(
-        address employee
-    ) internal view returns (uint256) {
-        return employees[employee].vestingScheduleCount;
-    }
-
-    function _getScheduleVestedOptions(
-        address employee,
-        uint256 scheduleIndex
-    ) internal view onlyActiveEmployee(employee) returns (uint256) {
-        if (scheduleIndex >= _getVestingScheduleCount(employee)) {
-            return 0;
-        }
-
-        VestingSchedule memory schedule = employees[employee].vestingSchedules[
-            scheduleIndex
-        ];
-
-        uint256 currentTime = block.timestamp;
-        uint256 cliffEndTime = schedule.startTime + schedule.cliffDuration;
-        uint256 vestingEndTime = schedule.startTime + schedule.vestingDuration;
-
-        if (currentTime < cliffEndTime) {
-            return 0;
-        } else {
-            // completely vested
-            if (currentTime >= vestingEndTime) {
-                return schedule.totalOptions;
-            }
-
-            uint256 vestedDuration = currentTime - cliffEndTime;
-            uint256 totalVestingDuration = schedule.vestingDuration -
-                schedule.cliffDuration;
-
-            return
-                ((vestedDuration * schedule.totalOptions) /
-                    totalVestingDuration) - schedule.exercisedOptions;
-        }
-    }
     // *todo end
 }
