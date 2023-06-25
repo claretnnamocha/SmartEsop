@@ -3,19 +3,21 @@ pragma solidity ^0.8.0;
 
 contract EmployeeStockOptionPlan {
     // *todo 1. Define the necessary data structures and variables
-    // Structure to hold vesting schedule for an employee
+    // Structure to hold vesting schedule for an employeeAddress
     struct VestingSchedule {
         uint256 cliffDuration; // Cliff duration in seconds
         uint256 vestingDuration; // Total vesting duration in seconds
         uint256 startTime; // Start time of the vesting schedule
     }
 
-    // Structure to hold information about an employee
+    // Structure to hold information about an employeeAddress
     struct Employee {
-        bool isActive; // Flag to indicate whether the employee is active
-        uint256 totalOptions; // Total number of options granted to the employee
-        uint256 exercisedOptions; // Number of options exercised so far
-        VestingSchedule vestingSchedule; // Options vesting schedule for the employee
+        bool isActive; // Flag to indicate whether the employeeAddress is active
+        uint256 grantedOptions; // Total number of stock options granted to the employeeAddress
+        uint256 receivedOptions; // Total number of stock options received from other employees
+        uint256 transferredOptions; // Total number of stock options transferred to other employees
+        uint256 exercisedOptions; // Number of stock options exercised so far
+        VestingSchedule vestingSchedule; // Options vesting schedule for the employeeAddress
     }
 
     address public owner; // Contract owner address
@@ -25,17 +27,23 @@ contract EmployeeStockOptionPlan {
     // *todo end
 
     // *todo 2. Define the necessary events
-    event StockOptionsGranted(address indexed employee, uint256 options);
+    event StockOptionsGranted(
+        address indexed employeeAddress,
+        uint256 stockOptions
+    );
 
     event VestingScheduleSet(
-        address indexed employee,
+        address indexed employeeAddress,
         uint256 cliffDuration,
         uint256 vestingDuration
     );
 
-    event OptionsExercised(address indexed employee, uint256 amount);
+    event StockOptionsExercised(
+        address indexed employeeAddress,
+        uint256 amount
+    );
 
-    event OptionsTransferred(
+    event StockOptionsTransferred(
         address indexed from,
         address indexed to,
         uint256 amount
@@ -52,45 +60,58 @@ contract EmployeeStockOptionPlan {
 
     // *todo 4. Implement the functions for granting stock options
     function grantStockOptions(
-        address employee,
-        uint256 options
+        address employeeAddress,
+        uint256 stockOptions
     ) external onlyOwner {
         require(
-            !employees[employee].isActive,
-            "Options have already been granted to this employee."
+            !employees[employeeAddress].isActive,
+            "Options have already been granted to this employeeAddress."
         );
 
-        employees[employee].isActive = true;
-        employees[employee].totalOptions = options;
+        require(stockOptions > 0, "Stock options must be greater than zero.");
 
-        emit StockOptionsGranted(employee, options);
+        employees[employeeAddress].isActive = true;
+        employees[employeeAddress].grantedOptions = stockOptions;
+
+        emit StockOptionsGranted(employeeAddress, stockOptions);
     }
 
     // *todo end
 
     // *todo 5. Implement the functions for setting the vesting schedule
     function setVestingSchedule(
-        address employee,
+        address employeeAddress,
         uint256 cliffDuration,
         uint256 vestingDuration
-    ) external onlyOwner onlyActiveEmployee(employee) {
+    ) external onlyOwner onlyActiveEmployee(employeeAddress) {
         require(
-            employees[employee].vestingSchedule.startTime == 0,
+            employees[employeeAddress].vestingSchedule.startTime == 0,
             "Vesting schedule has already been set"
         );
 
-        employees[employee].vestingSchedule = VestingSchedule(
+        require(cliffDuration > 0, "cliff duration must be greater than zero.");
+
+        require(
+            vestingDuration > 0,
+            "vesting duration must be greater than zero."
+        );
+
+        employees[employeeAddress].vestingSchedule = VestingSchedule(
             cliffDuration,
             vestingDuration,
             block.timestamp
         );
 
-        emit VestingScheduleSet(employee, cliffDuration, vestingDuration);
+        emit VestingScheduleSet(
+            employeeAddress,
+            cliffDuration,
+            vestingDuration
+        );
     }
 
     // *todo end
 
-    // *todo 6. Implement the functions for exercising options
+    // *todo 6. Implement the functions for exercising stock options
     function exerciseOptions(
         uint256 amount
     )
@@ -98,19 +119,22 @@ contract EmployeeStockOptionPlan {
         onlyActiveEmployee(msg.sender)
         hasAvailableOptions(msg.sender, amount)
     {
+        require(amount > 0, "Amount must be greater than zero.");
+
         uint256 exercisedOptions = employees[msg.sender].exercisedOptions;
         employees[msg.sender].exercisedOptions = exercisedOptions + amount;
 
-        emit OptionsExercised(msg.sender, amount);
+        emit StockOptionsExercised(msg.sender, amount);
     }
 
     // *todo end
 
-    // *todo 7. Implement the functions for tracking vested and exercised options
+    // *todo 7. Implement the functions for tracking vested and exercised stock options
     function getVestedOptions(
-        address employee
-    ) public view onlyActiveEmployee(employee) returns (uint256) {
-        VestingSchedule memory schedule = employees[employee].vestingSchedule;
+        address employeeAddress
+    ) public view onlyActiveEmployee(employeeAddress) returns (uint256) {
+        VestingSchedule memory schedule = employees[employeeAddress]
+            .vestingSchedule;
 
         if (schedule.startTime == 0) {
             return 0;
@@ -125,22 +149,23 @@ contract EmployeeStockOptionPlan {
         } else {
             // completely vested
             if (currentTime >= vestingEndTime) {
-                return employees[employee].totalOptions;
+                return employees[employeeAddress].grantedOptions;
             }
 
             uint256 vestedDuration = currentTime - cliffEndTime;
             uint256 totalVestingDuration = schedule.vestingDuration -
                 schedule.cliffDuration;
 
-            return ((vestedDuration * employees[employee].totalOptions) /
+            return ((vestedDuration *
+                employees[employeeAddress].grantedOptions) /
                 totalVestingDuration);
         }
     }
 
     function getExercisedOptions(
-        address employee
-    ) public view onlyActiveEmployee(employee) returns (uint256) {
-        return employees[employee].exercisedOptions;
+        address employeeAddress
+    ) public view onlyActiveEmployee(employeeAddress) returns (uint256) {
+        return employees[employeeAddress].exercisedOptions;
     }
 
     // *todo end
@@ -154,25 +179,30 @@ contract EmployeeStockOptionPlan {
         _;
     }
 
-    modifier onlyActiveEmployee(address employee) {
-        require(employees[employee].isActive, "The employee is not active.");
-        _;
-    }
-
-    modifier hasAvailableOptions(address employee, uint256 amount) {
+    modifier onlyActiveEmployee(address employeeAddress) {
         require(
-            amount <=
-                (getVestedOptions(employee) -
-                    employees[employee].exercisedOptions),
-            "Insufficient vested options available for exercise."
+            employees[employeeAddress].isActive,
+            "The employeeAddress is not active."
         );
         _;
     }
 
-    modifier vestingScheduleCompleted(address employee) {
-        require(employees[employee].isActive, "The employee is not active.");
+    modifier hasAvailableOptions(address employeeAddress, uint256 amount) {
+        require(
+            amount <= getAvailableOptions(employeeAddress),
+            "Insufficient vested stock options available for exercise."
+        );
+        _;
+    }
 
-        VestingSchedule memory schedule = employees[employee].vestingSchedule;
+    modifier vestingScheduleCompleted(address employeeAddress) {
+        require(
+            employees[employeeAddress].isActive,
+            "The employeeAddress is not active."
+        );
+
+        VestingSchedule memory schedule = employees[employeeAddress]
+            .vestingSchedule;
         uint256 currentTime = block.timestamp;
         uint256 endTime = schedule.startTime + schedule.vestingDuration;
 
@@ -193,15 +223,33 @@ contract EmployeeStockOptionPlan {
         vestingScheduleCompleted(msg.sender)
         hasAvailableOptions(msg.sender, amount)
     {
+        require(amount > 0, "Amount must be greater than zero.");
+
         address from = msg.sender;
 
-        uint256 exercisedOptions = employees[from].exercisedOptions;
+        employees[from].transferredOptions += amount;
 
-        employees[from].exercisedOptions = exercisedOptions + amount;
+        employees[to].receivedOptions += amount;
 
-        employees[to].totalOptions += amount;
+        emit StockOptionsTransferred(from, to, amount);
+    }
 
-        emit OptionsTransferred(from, to, amount);
+    function getTotalOptions(
+        address employeeAddress
+    ) public view onlyActiveEmployee(employeeAddress) returns (uint256) {
+        return
+            getVestedOptions(employeeAddress) +
+            employees[employeeAddress].receivedOptions;
+    }
+
+    function getAvailableOptions(
+        address employeeAddress
+    ) public view onlyActiveEmployee(employeeAddress) returns (uint256) {
+        Employee memory employee = employees[employeeAddress];
+
+        return
+            (getVestedOptions(employeeAddress) + employee.receivedOptions) -
+            (employee.exercisedOptions + employee.transferredOptions);
     }
 
     // *todo end
